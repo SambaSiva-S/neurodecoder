@@ -69,18 +69,21 @@ lda_global.fit(X_csp_global, y_global)
 print("Models loaded!\n")
 
 def load_data(file, subject_id):
-    if file is not None:
+    if file is not None and file != '' and file != 'null':
         fp = file.name if hasattr(file, 'name') else file
-        ok, msg = InputValidator.validate_file(fp)
-        if not ok:
-            return None, msg
-        if fp.endswith('.gdf'):
-            return mne.io.read_raw_gdf(fp, preload=True, verbose=False), "OK"
-        elif fp.endswith('.edf'):
-            return mne.io.read_raw_edf(fp, preload=True, verbose=False), "OK"
-        elif fp.endswith('.fif'):
-            return mne.io.read_raw_fif(fp, preload=True, verbose=False), "OK"
-        return None, "Unsupported format"
+        if not isinstance(fp, str) or not fp.strip():
+            pass  # fall through to demo subject
+        else:
+            ok, msg = InputValidator.validate_file(fp)
+            if not ok:
+                return None, msg
+            if fp.endswith('.gdf'):
+                return mne.io.read_raw_gdf(fp, preload=True, verbose=False), "OK"
+            elif fp.endswith('.edf'):
+                return mne.io.read_raw_edf(fp, preload=True, verbose=False), "OK"
+            elif fp.endswith('.fif'):
+                return mne.io.read_raw_fif(fp, preload=True, verbose=False), "OK"
+            return None, "Unsupported format"
     sid = max(1, min(9, int(subject_id) if subject_id else 1))
     ds = MOABBDataset(dataset_name="BNCI2014_001", subject_ids=[sid])
     return ds.datasets[0].raw, "OK"
@@ -165,7 +168,6 @@ def signal_explorer(file, subject_id):
     except Exception as e:
         return None, None, None, None, f"Error: {e}"
 
-
 # ===== TAB: CLASSICAL DECODER =====
 def classical_decoder(file, subject_id):
     try:
@@ -179,9 +181,17 @@ def classical_decoder(file, subject_id):
         X = epochs.get_data().astype(np.float32)
         y = epochs.events[:, -1]
 
-        Xc = csp_global.transform(X)
-        preds = lda_global.predict(Xc)
-        probs = lda_global.predict_proba(Xc)
+        if X.ndim != 3 or len(X) == 0:
+            return None, None, None, "Error: No valid epochs found"
+
+        # Train CSP+LDA on this subject's data
+        n_csp = min(8, X.shape[1])
+        csp = CSP(n_components=n_csp, reg=None, log=True, norm_trace=False)
+        Xc = csp.fit_transform(X, y)
+        lda = LinearDiscriminantAnalysis()
+        lda.fit(Xc, y)
+        preds = lda.predict(Xc)
+        probs = lda.predict_proba(Xc)
         acc = (preds==y).mean()*100
 
         # Confusion matrix
@@ -213,7 +223,7 @@ def classical_decoder(file, subject_id):
         plt.close(fig2)
 
         # CSP patterns
-        fig3 = csp_global.plot_patterns(epochs_global.info, ch_type='eeg', units='AU', size=1.5, show=False)
+        fig3 = csp.plot_patterns(epochs.info, ch_type='eeg', units='AU', size=1.5, show=False)
         fig3.suptitle('CSP spatial patterns', fontweight='bold', color='#1a1a2e')
         plt.tight_layout()
         p3 = tempfile.mktemp(suffix='.png')
@@ -226,11 +236,10 @@ def classical_decoder(file, subject_id):
             if m.sum()>0:
                 ca = (preds[m]==y[m]).mean()*100
                 per_class += f"- **{cn}:** {ca:.1f}%\n"
-        summary = f"**Accuracy: {acc:.1f}%** ({(preds==y).sum()}/{len(y)})\n\n{per_class}\n**Decoder:** CSP(8) + LDA · **Filter:** 8-30Hz"
+        summary = f"**Accuracy: {acc:.1f}%** ({(preds==y).sum()}/{len(y)})\n\n{per_class}\n**Decoder:** CSP({n_csp}) + LDA · **Filter:** 8-30Hz"
         return p1, p2, p3, summary
     except Exception as e:
         return None, None, None, f"Error: {e}"
-
 
 # ===== TAB: REAL-TIME SIMULATOR =====
 def realtime_sim(file, subject_id, trial_num):
